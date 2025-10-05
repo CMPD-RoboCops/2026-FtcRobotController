@@ -14,6 +14,7 @@ import org.firstinspires.ftc.vision.apriltag.AprilTagGameDatabase;
 import org.firstinspires.ftc.vision.apriltag.AprilTagLibrary;
 import org.firstinspires.ftc.robotcore.external.hardware.camera.WebcamName;
 
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
@@ -40,7 +41,7 @@ public class AprilTagChaseAuto extends LinearOpMode {
     // === IMAGE GEOMETRY (TODO: set to your actual stream resolution/FOV) ===
     static final int IMG_W = 640, IMG_H = 480;
     // If your SDK doesn’t expose a bearing, we’ll estimate it from pixels using HFOV:
-    static final double CAMERA_HFOV_DEG = 70.0; // typical Logitech-ish; replace with your real value
+    static final double CAMERA_HFOV_DEG = 70.0; // replace with your real value
 
     // === CONTROL GAINS / LIMITS (tune these) ===
     static final double K_TURN = 0.02;           // motor power per degree of bearing error
@@ -53,12 +54,18 @@ public class AprilTagChaseAuto extends LinearOpMode {
     static final double STOP_RANGE_M = 0.35;          // stop when this close to the tag plane (tune!)
 
     // If no range available, we approximate “closeness” by tag pixel size:
-    static final double TAG_SIZE_PIX_TO_STOP = 14000;   // area (px^2) at which we stop
-    static final double TAG_SIZE_PIX_TO_SLOW = 5000;    // start slowing forward
+    static final double TAG_SIZE_PIX_TO_STOP = 99999;   // area (px^2) at which we stop, Original is 14000
+    static final double TAG_SIZE_PIX_TO_SLOW = 1;       // start slowing forward
 
     // === SCAN BEHAVIOR WHEN NO TAG SEEN ===
-    static final double SCAN_TURN_POWER = 0.20;  // slow spin to find tag
-    static final double SCAN_DIR_SECONDS = 1.5;  // flip scan direction occasionally
+    static final double SCAN_TURN_POWER = 0.0;   // gentle auto-scan if > 0.0
+    static final double SCAN_DIR_SECONDS = 3;
+
+    // === SIGNS/CALIBRATION ===
+    // If +fwd makes the robot back up, set FWD_SIGN = -1.
+    static final int FWD_SIGN  = -1;
+    // If seeing the tag on the right makes the robot turn left, set TURN_SIGN = -1.
+    static final int TURN_SIGN = -1;
 
     @Override
     public void runOpMode() throws InterruptedException {
@@ -70,9 +77,9 @@ public class AprilTagChaseAuto extends LinearOpMode {
 
         // Mecanum standard directions; flip if your robot drives backward
         lf.setDirection(DcMotorSimple.Direction.REVERSE);
-        lb.setDirection(DcMotorSimple.Direction.REVERSE);
+        lb.setDirection(DcMotorSimple.Direction.FORWARD);
         rf.setDirection(DcMotorSimple.Direction.FORWARD);
-        rb.setDirection(DcMotorSimple.Direction.FORWARD);
+        rb.setDirection(DcMotorSimple.Direction.REVERSE);
 
         for (DcMotor m : new DcMotor[]{lf, rf, lb, rb}) {
             m.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
@@ -91,19 +98,17 @@ public class AprilTagChaseAuto extends LinearOpMode {
                 // .setDistortionCoefficients(k1,k2,p1,p2,k3) // if you have them
                 .build();
 
-
         WebcamName webcam = hardwareMap.get(WebcamName.class, "Webcam 1");
 
         portal = new VisionPortal.Builder()
-                .setCamera(webcam)                   // ✅ pass a WebcamName, not (hardwareMap,"name")
+                .setCamera(webcam)
                 .addProcessor(tagProc)
                 .setStreamFormat(VisionPortal.StreamFormat.MJPEG)
                 .enableLiveView(true)
                 .build();
 
-        //This version of the SDK may not include this
-        // Tell the processor where the camera sits on the robot
-        //tagProc.setCameraPose(CAM_X, CAM_Y, CAM_Z, CAM_ROLL, CAM_PITCH, CAM_YAW,
+        // This version of the SDK may not include this
+        // tagProc.setCameraPose(CAM_X, CAM_Y, CAM_Z, CAM_ROLL, CAM_PITCH, CAM_YAW,
         //        DistanceUnit.METER, AngleUnit.DEGREES);
 
         telemetry.addLine("AprilTag Chase: READY");
@@ -115,27 +120,26 @@ public class AprilTagChaseAuto extends LinearOpMode {
         int scanDir = 1;
 
         while (opModeIsActive()) {
-            List<AprilTagDetection> dets = tagProc.getDetections();
+            // Defensive copy to avoid ConcurrentModificationException
+            List<AprilTagDetection> dets = new ArrayList<>(tagProc.getDetections());
 
             if (!dets.isEmpty()) {
-                // Pick the "best" detection:
-                // heuristic 1: highest decision margin; heuristic 2: largest tag area
+                // Pick the "best" detection: highest decision margin, else largest area
                 dets.sort(Comparator.<AprilTagDetection>comparingDouble(d -> -d.decisionMargin));
                 AprilTagDetection best = dets.get(0);
 
                 // === 1) Compute BEARING error (deg) ===
                 Double bearingDeg = null;
 
-                // Path A: SDK provides a bearing field (common: best.ftcPose.bearing)
+                // Path A: use SDK bearing if available
                 try {
-                    bearingDeg = best.ftcPose.bearing; // if available in your SDK
+                    bearingDeg = best.ftcPose.bearing;
                 } catch (Throwable t) {
                     // ignore, fall back to pixel-based
                 }
 
                 // Path B: estimate from pixel center using known HFOV
                 if (bearingDeg == null) {
-                    // Some SDKs expose center.x; else average the four corners
                     double cxPix = (best.center != null) ? best.center.x : avgX(best);
                     double norm = (cxPix - (IMG_W / 2.0)) / (IMG_W / 2.0); // -1..+1
                     bearingDeg = norm * (CAMERA_HFOV_DEG / 2.0);
@@ -154,7 +158,7 @@ public class AprilTagChaseAuto extends LinearOpMode {
                     if (rangeM <= STOP_RANGE_M) closeness = 1.0;
                     else if (rangeM < RANGE_SLOWDOWN_START_M) {
                         double span = RANGE_SLOWDOWN_START_M - STOP_RANGE_M;
-                        closeness = 1.0 - Math.max(0, (rangeM - STOP_RANGE_M) / span); // grows as we approach
+                        closeness = 1.0 - Math.max(0, (rangeM - STOP_RANGE_M) / span);
                     } else {
                         closeness = 0.0;
                     }
@@ -175,7 +179,8 @@ public class AprilTagChaseAuto extends LinearOpMode {
                 double absErr = Math.abs(bearingDeg);
 
                 if (absErr > BEARING_DEADBAND_DEG) {
-                    turnCmd = clamp(K_TURN * bearingDeg, -0.4, 0.4); // gentle turns
+                    // Apply TURN_SIGN so tag on right results in right turn
+                    turnCmd = clamp(K_TURN * TURN_SIGN * bearingDeg, -0.4, 0.4);
                 }
 
                 // Forward power: creep forward when roughly centered, slow as we get close
@@ -205,7 +210,7 @@ public class AprilTagChaseAuto extends LinearOpMode {
                 telemetry.update();
 
             } else {
-                // No tag: slow scan to acquire
+                // No tag: slow scan to acquire (set SCAN_TURN_POWER > 0 to enable)
                 double now = getRuntime();
                 if (now - lastScanFlipTime > SCAN_DIR_SECONDS) {
                     scanDir *= -1;
@@ -224,6 +229,9 @@ public class AprilTagChaseAuto extends LinearOpMode {
     // --- helpers ---
 
     void driveArcade(double fwd, double turn) {
+        // Ensure +fwd = move toward the tag (flip once here if needed)
+        fwd *= FWD_SIGN;
+
         // No strafe; simple mecanum/tank mix
         double lfP = fwd + turn;
         double rfP = fwd - turn;
@@ -231,7 +239,8 @@ public class AprilTagChaseAuto extends LinearOpMode {
         double rbP = fwd - turn;
 
         // normalize to [-1,1]
-        double max = Math.max(1.0, Math.max(Math.abs(lfP), Math.max(Math.abs(rfP), Math.max(Math.abs(lbP), Math.abs(rbP)))));
+        double max = Math.max(1.0, Math.max(Math.abs(lfP),
+                Math.max(Math.abs(rfP), Math.max(Math.abs(lbP), Math.abs(rbP)))));
         lf.setPower(lfP / max);
         rf.setPower(rfP / max);
         lb.setPower(lbP / max);
@@ -256,7 +265,7 @@ public class AprilTagChaseAuto extends LinearOpMode {
 
     static double tagAreaPx(AprilTagDetection d) {
         try {
-            // polygon area from corners (shoelace), or use d.metadata.tagsize? We want pixel area:
+            // polygon area from corners (shoelace)
             double x0 = d.corners[0].x, y0 = d.corners[0].y;
             double x1 = d.corners[1].x, y1 = d.corners[1].y;
             double x2 = d.corners[2].x, y2 = d.corners[2].y;
@@ -264,12 +273,8 @@ public class AprilTagChaseAuto extends LinearOpMode {
             double sum = (x0*y1 - y0*x1) + (x1*y2 - y1*x2) + (x2*y3 - y2*x3) + (x3*y0 - y3*x0);
             return Math.abs(sum) * 0.5;
         } catch (Throwable t) {
-            // fallback: approximate area by width*height from bbox if available, else 0
-            try {
-                return d.metadata != null ? 1.0 : 0.0;
-            } catch (Throwable t2) {
-                return 0.0;
-            }
+            // fallback: approximate 0 if unavailable
+            return 0.0;
         }
     }
 }
