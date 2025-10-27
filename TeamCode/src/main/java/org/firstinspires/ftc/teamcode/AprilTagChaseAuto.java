@@ -20,7 +20,7 @@ import java.util.List;
 
 //This Op Mode is written for:  Kludge
 
-@Autonomous(name="AprilTag Chase (Demo)")
+@Autonomous(name="AprilTag  Chase (Demo)")
 public class AprilTagChaseAuto extends LinearOpMode {
 
     // === MOTORS (rename to your config) ===
