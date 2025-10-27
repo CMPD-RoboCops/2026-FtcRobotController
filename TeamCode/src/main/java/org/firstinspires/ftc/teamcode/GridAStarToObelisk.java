@@ -17,7 +17,7 @@ import java.util.*;
  * SAME AS BEFORE — BUT IMU REMOVED.
  * Heading is now estimated using encoder deltas (less accurate but functional).
  */
-@Autonomous(name = "Grid A* to Obelisk (Super Commented)(No IMU)", group = "Competition")
+@Autonomous(name = "Grid A* to Obelisk (Super Commented)(No EMU)", group = "Competition")
 public class GridAStarToObelisk extends LinearOpMode {
 
     // ---------------- GRID / SCALE ----------------
