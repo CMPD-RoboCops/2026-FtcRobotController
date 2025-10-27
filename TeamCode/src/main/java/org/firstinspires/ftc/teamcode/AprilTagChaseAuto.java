@@ -44,10 +44,10 @@ public class AprilTagChaseAuto extends LinearOpMode {
     static final double CAMERA_HFOV_DEG = 70.0; // replace with your real value
 
     // === CONTROL GAINS / LIMITS (tune these) ===
-    static final double K_TURN = 0.02;           // motor power per degree of bearing error
-    static final double K_FWD  = 0.40;           // base forward power
-    static final double FWD_MIN = 0.10;          // minimum creep forward when allowed
-    static final double FWD_MAX = 0.40;          // cap forward speed
+    static final double K_TURN = 0.75;           // motor power per degree of bearing error, Original Value 0.02
+    static final double K_FWD  = 0.75;           // base forward power, Original Value 0.40
+    static final double FWD_MIN = 0.75;          // minimum creep forward when allowed, Original Value 0.10
+    static final double FWD_MAX = 1;          // cap forward speed, Original Value 0.40
 
     static final double BEARING_DEADBAND_DEG = 2.0;   // don’t turn if within this
     static final double RANGE_SLOWDOWN_START_M = 1.0; // start slowing forward power when closer than this
