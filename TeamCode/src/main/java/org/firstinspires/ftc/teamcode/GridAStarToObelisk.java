@@ -4,44 +4,47 @@ import com.qualcomm.robotcore.eventloop.opmode.Autonomous;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorSimple;
-
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
 import java.util.*;
 
 /**
- * ========================= WHY THIS CODE LOOKS THIS WAY =========================
- * GOAL: Drive a mecanum robot from a start cell to a goal cell without hitting stuff.
- *
- * SAME AS BEFORE — BUT IMU REMOVED.
- * Heading is now estimated using encoder deltas (less accurate but functional).
+ * ======================================================
+ * Autonomous Path Planning using A* (No IMU)
+ * ------------------------------------------------------
+ * Drives a mecanum robot from a start grid cell to a goal
+ * using A* pathfinding + encoder-based localization.
+ * ======================================================
  */
-@Autonomous(name = "Grid A* to Obelisk (Super Commented)(No EMU)", group = "Competition")
+@Autonomous(name = "Grid A* to Obelisk (Fixed Clean Version)(descriptive)(no EMU)", group = "Competition")
 public class GridAStarToObelisk extends LinearOpMode {
 
-    // ---------------- GRID / SCALE ----------------
-    static final int GRID = 48;
-    static final double CELL_IN = 3.0;
+    // ---------------- GRID SETTINGS ----------------
+    static final int GRID_SIZE = 48;
+    static final double CELL_INCHES = 3.0;
 
-    // ---------------- ROBOT CONSTANTS (TUNE THESE) ----------------
-    public static final double TICKS_PER_REV      = 537.7;
-    public static final double WHEEL_RADIUS_IN    = 1.889;
-    public static final double GEAR_RATIO         = 1.0;
-    public static final double TRACK_WIDTH_IN     = 14.0;
-    public static final double LATERAL_MULTIPLIER = 1.08;
+    // ---------------- ROBOT CONSTANTS ----------------
+    static final double TICKS_PER_REV = 537.7;
+    static final double WHEEL_RADIUS_IN = 1.889;
+    static final double GEAR_RATIO = 1.0;
+    static final double TRACK_WIDTH_IN = 14.0;
+    static final double LATERAL_MULTIPLIER = 1.08;
 
-    public static final double VX_kP = 0.085;
-    public static final double VY_kP = 0.085;
-    public static final double HEADING_kP = 0.015;
-    public static final double MAX_DRIVE_POWER = 0.7;
-    public static final double MAX_TURN_POWER  = 0.5;
-    public static final double POS_TOL_IN      = 2.0;
-    public static final double HEADING_TOL_DEG = 7.0;
+    // Control tuning
+    static final double VX_kP = 0.085;
+    static final double VY_kP = 0.085;
+    static final double HEADING_kP = 0.015;
 
-    // ---------------- START / GOAL (CELLS) ----------------
+    static final double MAX_DRIVE_POWER = 0.7;
+    static final double MAX_TURN_POWER = 0.5;
+
+    static final double POSITION_TOLERANCE_IN = 2.0;
+    static final double HEADING_TOLERANCE_DEG = 7.0;
+
+    // Start and goal cells
     static final int START_CX = 46, START_CY = 2;
-    static final int GOAL_CX  = 24, GOAL_CY  = 46;
+    static final int GOAL_CX = 24, GOAL_CY = 46;
 
     // ---------------- HARDWARE ----------------
     private DcMotor fl, fr, bl, br;
@@ -50,16 +53,16 @@ public class GridAStarToObelisk extends LinearOpMode {
     private int lastFL, lastFR, lastBL, lastBR;
     private double lastHeadingRad = 0.0;
     private Pose2d pose = new Pose2d(
-            (START_CX + 0.5) * CELL_IN,
-            (START_CY + 0.5) * CELL_IN,
+            (START_CX + 0.5) * CELL_INCHES,
+            (START_CY + 0.5) * CELL_INCHES,
             0.0
     );
 
-    private int[][] grid = new int[GRID][GRID];
+    private int[][] grid = new int[GRID_SIZE][GRID_SIZE];
 
     @Override
     public void runOpMode() {
-        // 1) MAP
+        // ---------------- MAP SETUP ----------------
         initDefaultGrid(grid);
         tryLoadCsvGrid("/sdcard/FIRST/ftc_field_grid_3in.csv", grid);
 
@@ -69,16 +72,17 @@ public class GridAStarToObelisk extends LinearOpMode {
             return;
         }
 
-        // 2) HARDWARE
+        // ---------------- HARDWARE INIT ----------------
         fl = hardwareMap.get(DcMotor.class, "FrontLeft");
         fr = hardwareMap.get(DcMotor.class, "FrontRight");
         bl = hardwareMap.get(DcMotor.class, "BackLeft");
         br = hardwareMap.get(DcMotor.class, "BackRight");
 
-        fl.setDirection(DcMotor.Direction.REVERSE);
-        bl.setDirection(DcMotor.Direction.FORWARD);
-        fr.setDirection(DcMotor.Direction.FORWARD);
-        br.setDirection(DcMotor.Direction.REVERSE);
+        // For standard mecanum orientation:
+        fl.setDirection(DcMotorSimple.Direction.REVERSE);
+        fr.setDirection(DcMotorSimple.Direction.FORWARD);
+        bl.setDirection(DcMotorSimple.Direction.REVERSE);
+        br.setDirection(DcMotorSimple.Direction.FORWARD);
 
         for (DcMotor m : new DcMotor[]{fl, fr, bl, br}) {
             m.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
@@ -91,44 +95,36 @@ public class GridAStarToObelisk extends LinearOpMode {
         lastBL = bl.getCurrentPosition();
         lastBR = br.getCurrentPosition();
 
-        telemetry.addLine("A* planner ready (No IMU)");
-        telemetry.addData("Start cell", "(%d,%d)", START_CX, START_CY);
-        telemetry.addData("Goal cell",  "(%d,%d)", GOAL_CX,  GOAL_CY);
+        telemetry.addLine("A* Planner Ready (No IMU)");
+        telemetry.addData("Start", "(%d, %d)", START_CX, START_CY);
+        telemetry.addData("Goal", "(%d, %d)", GOAL_CX, GOAL_CY);
         telemetry.update();
 
-        // 3) PLAN PREVIEW
-        List<Cell> preview = aStar(grid, new Cell(START_CX, START_CY), new Cell(GOAL_CX, GOAL_CY));
-        if (preview == null || preview.isEmpty()) {
-            telemetry.addLine("No path found (pre-start). Check your map or cells.");
-            telemetry.update();
-        } else {
-            List<Cell> prunedPreview = prunePathWithLoS(grid, preview);
-            telemetry.addData("Path cells (raw)", preview.size());
-            telemetry.addData("After prune", prunedPreview.size());
-            telemetry.update();
-        }
-
-        waitForStart();
-        if (isStopRequested()) return;
-
-        // 4) PLAN AGAIN (post-start)
+        // ---------------- PATH PLANNING PREVIEW ----------------
         List<Cell> path = aStar(grid, new Cell(START_CX, START_CY), new Cell(GOAL_CX, GOAL_CY));
         if (path == null || path.isEmpty()) {
-            telemetry.addLine("No path found (post-start).");
+            telemetry.addLine("No path found!");
             telemetry.update();
             return;
         }
 
-        List<Cell> pruned = prunePathWithLoS(grid, path);
-        List<Pose2d> waypoints = toWaypointList(pruned);
+        List<Cell> prunedPath = prunePathWithLoS(grid, path);
+        List<Pose2d> waypoints = toWaypointList(prunedPath);
 
-        // 5) FOLLOW
-        for (Pose2d wp : waypoints) {
-            goToWaypoint(wp);
+        telemetry.addData("Path Cells", path.size());
+        telemetry.addData("After Prune", prunedPath.size());
+        telemetry.update();
+
+        waitForStart();
+        if (isStopRequested()) return;
+
+        // ---------------- FOLLOW WAYPOINTS ----------------
+        for (Pose2d target : waypoints) {
+            goToWaypoint(target);
             if (!opModeIsActive()) break;
         }
 
-        drive(0,0,0);
+        driveMecanum(0, 0, 0);
         sleep(200);
     }
 
@@ -148,8 +144,8 @@ public class GridAStarToObelisk extends LinearOpMode {
         open.add(start);
 
         int[][] dirs = {
-                {1,0},{-1,0},{0,1},{0,-1},
-                {1,1},{1,-1},{-1,1},{-1,-1}
+                {1, 0}, {-1, 0}, {0, 1}, {0, -1},
+                {1, 1}, {1, -1}, {-1, 1}, {-1, -1}
         };
 
         while (!open.isEmpty()) {
@@ -166,11 +162,12 @@ public class GridAStarToObelisk extends LinearOpMode {
                 int ny = cur.y + d[1];
                 if (!inBounds(nx, ny, w, h)) continue;
                 if (isBlocked(g, nx, ny)) continue;
-                if (d[0]!=0 && d[1]!=0) {
-                    if (isBlocked(g, cur.x+d[0], cur.y) || isBlocked(g, cur.x, cur.y+d[1])) continue;
+                if (d[0] != 0 && d[1] != 0) {
+                    if (isBlocked(g, cur.x + d[0], cur.y) || isBlocked(g, cur.x, cur.y + d[1]))
+                        continue;
                 }
 
-                double step = (d[0]==0 || d[1]==0) ? 1.0 : Math.sqrt(2);
+                double step = (d[0] == 0 || d[1] == 0) ? 1.0 : Math.sqrt(2);
                 double tentativeG = gScore[cur.y][cur.x] + step;
 
                 if (tentativeG < gScore[ny][nx]) {
@@ -243,8 +240,14 @@ public class GridAStarToObelisk extends LinearOpMode {
             pts.add(new int[]{x, y});
             if (x == x1 && y == y1) break;
             int e2 = 2 * err;
-            if (e2 > -dy) { err -= dy; x += sx; }
-            if (e2 <  dx) { err += dx; y += sy; }
+            if (e2 > -dy) {
+                err -= dy;
+                x += sx;
+            }
+            if (e2 < dx) {
+                err += dx;
+                y += sy;
+            }
         }
         return pts;
     }
@@ -252,7 +255,7 @@ public class GridAStarToObelisk extends LinearOpMode {
     List<Pose2d> toWaypointList(List<Cell> cells) {
         ArrayList<Pose2d> list = new ArrayList<>();
         for (Cell c : cells) {
-            list.add(new Pose2d((c.x + 0.5) * CELL_IN, (c.y + 0.5) * CELL_IN, 0.0));
+            list.add(new Pose2d((c.x + 0.5) * CELL_INCHES, (c.y + 0.5) * CELL_INCHES, 0.0));
         }
         for (int i = 0; i < list.size() - 1; i++) {
             Pose2d a = list.get(i), b = list.get(i + 1);
@@ -265,56 +268,54 @@ public class GridAStarToObelisk extends LinearOpMode {
 
     // ------------------------- DRIVING -------------------------
 
-    void goToWaypoint(Pose2d target) {
+    private void goToWaypoint(Pose2d targetPose) {
         while (opModeIsActive()) {
             updateLocalPoseFromEncoders();
 
-            double ex = target.x - pose.x;
-            double ey = target.y - pose.y;
-            double ePos = Math.hypot(ex, ey);
-            double heading = normalizeDeg(pose.h);
-            double eH = normalizeDeg(target.h - heading);
+            double dx = targetPose.x - pose.x;
+            double dy = targetPose.y - pose.y;
+            double distanceError = Math.hypot(dx, dy);
 
-            double rad = Math.toRadians(heading);
-            double cos = Math.cos(rad), sin = Math.sin(rad);
-            double rx =  cos * ex + sin * ey;
-            double ry = -sin * ex + cos * ey;
+            double headingRad = Math.toRadians(pose.h);
+            double robotXError = Math.cos(headingRad) * dx + Math.sin(headingRad) * dy;
+            double robotYError = -Math.sin(headingRad) * dx + Math.cos(headingRad) * dy;
 
-            double vx = VX_kP * rx;
-            double vy = VY_kP * ry;
-            double om = HEADING_kP * eH;
-            om = clamp(om, -MAX_TURN_POWER, MAX_TURN_POWER);
+            double headingError = normalizeDeg(targetPose.h - pose.h);
 
-            if (ePos < POS_TOL_IN && Math.abs(eH) < HEADING_TOL_DEG) {
-                drive(0,0,0);
+            double forwardCmd = VX_kP * robotXError;
+            double strafeCmd = VY_kP * robotYError * LATERAL_MULTIPLIER;
+            double turnCmd = HEADING_kP * headingError;
+            turnCmd = clamp(turnCmd, -MAX_TURN_POWER, MAX_TURN_POWER);
+
+            if (distanceError < POSITION_TOLERANCE_IN && Math.abs(headingError) < HEADING_TOLERANCE_DEG) {
+                driveMecanum(0, 0, 0);
                 break;
             }
 
-            drive(vx, vy * LATERAL_MULTIPLIER, om);
+            driveMecanum(forwardCmd, strafeCmd, turnCmd);
 
-            telemetry.addData("Target (in)", "(%.1f, %.1f, %.1f°)", target.x, target.y, target.h);
-            telemetry.addData("Pose   (in)", "(%.1f, %.1f, %.1f°)", pose.x, pose.y, pose.h);
+            telemetry.addData("Target", "(%.1f, %.1f, %.1f°)", targetPose.x, targetPose.y, targetPose.h);
+            telemetry.addData("Pose", "(%.1f, %.1f, %.1f°)", pose.x, pose.y, pose.h);
             telemetry.update();
         }
     }
 
-    private void drive(double vx, double vy, double omega) {
-        double flP = vx + vy + omega;
-        double frP = vx - vy - omega;
-        double blP = vx - vy + omega;
-        double brP = vx + vy - omega;
+    private void driveMecanum(double forward, double strafe, double turn) {
+        double flPower = forward + strafe + turn;
+        double frPower = forward - strafe - turn;
+        double blPower = forward - strafe + turn;
+        double brPower = forward + strafe - turn;
 
-        double max = Math.max(1.0, Math.max(Math.abs(flP),
-                Math.max(Math.abs(frP), Math.max(Math.abs(blP), Math.abs(brP)))));
-        flP /= max; frP /= max; blP /= max; brP /= max;
+        double max = Math.max(1.0, Math.max(Math.abs(flPower),
+                Math.max(Math.abs(frPower), Math.max(Math.abs(blPower), Math.abs(brPower)))));
 
-        flP *= MAX_DRIVE_POWER; frP *= MAX_DRIVE_POWER;
-        blP *= MAX_DRIVE_POWER; brP *= MAX_DRIVE_POWER;
-
-        fl.setPower(flP); fr.setPower(frP); bl.setPower(blP); br.setPower(brP);
+        fl.setPower((flPower / max) * MAX_DRIVE_POWER);
+        fr.setPower((frPower / max) * MAX_DRIVE_POWER);
+        bl.setPower((blPower / max) * MAX_DRIVE_POWER);
+        br.setPower((brPower / max) * MAX_DRIVE_POWER);
     }
 
-    // ------------------------- ENCODER LOCALIZATION -------------------------
+    // ------------------------- LOCALIZATION -------------------------
 
     private void updateLocalPoseFromEncoders() {
         int curFL = fl.getCurrentPosition();
@@ -327,7 +328,10 @@ public class GridAStarToObelisk extends LinearOpMode {
         int dBL = curBL - lastBL;
         int dBR = curBR - lastBR;
 
-        lastFL = curFL; lastFR = curFR; lastBL = curBL; lastBR = curBR;
+        lastFL = curFL;
+        lastFR = curFR;
+        lastBL = curBL;
+        lastBR = curBR;
 
         double ticksToIn = (2.0 * Math.PI * WHEEL_RADIUS_IN) * GEAR_RATIO / TICKS_PER_REV;
         double dFLin = dFL * ticksToIn;
@@ -338,7 +342,7 @@ public class GridAStarToObelisk extends LinearOpMode {
         double dXr = (dFLin + dFRin + dBLin + dBRin) / 4.0;
         double dYr = (-dFLin + dFRin + dBLin - dBRin) / 4.0 * LATERAL_MULTIPLIER;
 
-        double leftAvg  = (dFLin + dBLin) / 2.0;
+        double leftAvg = (dFLin + dBLin) / 2.0;
         double rightAvg = (dFRin + dBRin) / 2.0;
         double dTheta = (rightAvg - leftAvg) / TRACK_WIDTH_IN;
         lastHeadingRad += dTheta;
@@ -351,16 +355,19 @@ public class GridAStarToObelisk extends LinearOpMode {
         pose = new Pose2d(pose.x + dXf, pose.y + dYf, Math.toDegrees(lastHeadingRad));
     }
 
-    // ------------------------- MAP / UTILS -------------------------
+    // ------------------------- UTILITIES -------------------------
 
     void initDefaultGrid(int[][] g) {
-        for (int y = 0; y < GRID; y++) {
-            for (int x = 0; x < GRID; x++) {
+        for (int y = 0; y < GRID_SIZE; y++) {
+            for (int x = 0; x < GRID_SIZE; x++) {
                 g[y][x] = 0;
             }
         }
-        for (int i = 0; i < GRID; i++) {
-            g[0][i] = 1; g[GRID-1][i] = 1; g[i][0] = 1; g[i][GRID-1] = 1;
+        for (int i = 0; i < GRID_SIZE; i++) {
+            g[0][i] = 1;
+            g[GRID_SIZE - 1][i] = 1;
+            g[i][0] = 1;
+            g[i][GRID_SIZE - 1] = 1;
         }
     }
 
@@ -371,23 +378,17 @@ public class GridAStarToObelisk extends LinearOpMode {
             BufferedReader br = new BufferedReader(new FileReader(f));
             ArrayList<String[]> rows = new ArrayList<>();
             String line;
-            while ((line = br.readLine()) != null) {
-                rows.add(line.split(","));
-            }
+            while ((line = br.readLine()) != null) rows.add(line.split(","));
             br.close();
-            if (rows.size() != GRID || rows.get(0).length != GRID) return;
+            if (rows.size() != GRID_SIZE || rows.get(0).length != GRID_SIZE) return;
 
-            for (int y = 0; y < GRID; y++) {
-                for (int x = 0; x < GRID; x++) {
-                    if (x == 0 || x == GRID-1 || y == 0 || y == GRID-1) {
-                        g[y][x] = 1;
-                    } else {
-                        String token = rows.get(y)[x].trim();
-                        g[y][x] = ".".equals(token) ? 0 : 1;
-                    }
+            for (int y = 0; y < GRID_SIZE; y++) {
+                for (int x = 0; x < GRID_SIZE; x++) {
+                    g[y][x] = (rows.get(y)[x].trim().equals(".")) ? 0 : 1;
                 }
             }
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+        }
     }
 
     boolean inBounds(int x, int y, int w, int h) {
@@ -398,7 +399,10 @@ public class GridAStarToObelisk extends LinearOpMode {
         return g[y][x] >= 1;
     }
 
-    double hCost(Cell a, Cell b) { return hCost(a.x, a.y, b.x, b.y); }
+    double hCost(Cell a, Cell b) {
+        return hCost(a.x, a.y, b.x, b.y);
+    }
+
     double hCost(int x, int y, int gx, int gy) {
         int dx = Math.abs(x - gx), dy = Math.abs(y - gy);
         int diag = Math.min(dx, dy);
@@ -412,20 +416,33 @@ public class GridAStarToObelisk extends LinearOpMode {
 
     static double normalizeDeg(double a) {
         while (a <= -180) a += 360;
-        while (a >   180) a -= 360;
+        while (a > 180) a -= 360;
         return a;
     }
 
     // ------------------------- DATA STRUCTURES -------------------------
-
     static class Cell {
-        int x, y; double g, f;
-        Cell(int x, int y) { this.x = x; this.y = y; }
-        Cell(int x, int y, double g, double f) { this.x=x; this.y=y; this.g=g; this.f=f; }
+        int x, y;
+        double g, f;
+
+        Cell(int x, int y) {
+            this.x = x;
+            this.y = y;
+        }
+
+        Cell(int x, int y, double g, double f) {
+            this.x = x;
+            this.y = y;
+            this.g = g;
+            this.f = f;
+        }
     }
 
     static class Pose2d {
         double x, y, h;
-        Pose2d(double x, double y, double h) { this.x = x; this.y = y; this.h = h; }
+
+        Pose2d(double x, double y, double h) {
+            this.x = x;
+        }
     }
 }
